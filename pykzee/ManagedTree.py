@@ -12,6 +12,7 @@ from pykzee.common import (
     call_soon,
     pathToString,
     setDataForPath,
+    getDataForPath,
 )
 from pykzee.Plugin import Plugin
 from pykzee.Tree import Tree
@@ -130,15 +131,7 @@ class ManagedTree:
         self.__coreSet = self.__coreMount.set
 
     def get(self, path: PathType):
-        data = self.__state
-        for p in path:
-            if type(p) not in (str, int):
-                raise InvalidPathElement(p)
-            try:
-                data = data[p]
-            except (KeyError, IndexError, TypeError):
-                return Undefined
-        return data
+        return getDataForPath(self.__state, path)
 
     def set(self, path: PathType, value):
         new_state = setDataForPath(self.__state, path, value)

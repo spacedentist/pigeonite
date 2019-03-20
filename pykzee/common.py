@@ -9,7 +9,7 @@ from pyimmutable import ImmutableDict, ImmutableList
 
 __all__ = (
     "Undefined PathType InvalidPathElement PathElementTypeMismatch "
-    "sanitize setDataForPath "
+    "sanitize getDataForPath setDataForPath "
     "stringToPath stringToPathElement pathToString "
     "waitForOne call_soon print_exception_task_callback".split()
 )
@@ -74,6 +74,19 @@ def enforceKeyType(s):
     if type(s) is not str:
         raise TypeError("Dictionary keys must be strings")
     return s
+
+
+def getDataForPath(data, path: PathType):
+    for p in path:
+        if type(data) not in (ImmutableDict, ImmutableList):
+            return Undefined
+        if type(p) not in (str, int):
+            raise InvalidPathElement(p)
+        try:
+            data = data[p]
+        except Exception:
+            return Undefined
+    return data
 
 
 def setDataForPath(data, path: PathType, value):
