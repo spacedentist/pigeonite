@@ -1,4 +1,5 @@
 import asyncio
+import collections.abc
 import inspect
 import re
 import typing
@@ -10,7 +11,7 @@ from pyimmutable import ImmutableDict, ImmutableList
 __all__ = (
     "Undefined PathType InvalidPathElement PathElementTypeMismatch "
     "sanitize getDataForPath setDataForPath "
-    "stringToPath stringToPathElement pathToString "
+    "makePath stringToPathElement pathToString "
     "waitForOne call_soon print_exception_task_callback".split()
 )
 
@@ -122,19 +123,34 @@ def setDataForPath(data, path: PathType, value):
     return data.set(p, setDataForPath(data.get(p, Undefined), path, value))
 
 
-def stringToPath(s: str, relativeTo: PathType = ()) -> PathType:
-    absolute = s.startswith("/")
-    s = s.strip("/")
-    if not s:
-        return () if absolute else relativeTo
-    result = [] if absolute else list(relativeTo)
-    for e in s.split("/"):
-        if e == "..":
-            if result:
-                result.pop()
-        elif e != ".":
-            result.append(stringToPathElement(e))
-    return tuple(result)
+def makePath(
+    s: typing.Union[str, typing.Sequence[PathElementType]],
+    *,
+    relativeTo: PathType = (),
+) -> PathType:
+    if type(s) is str:
+        absolute = s.startswith("/")
+        s = s.strip("/")
+        if not s:
+            return () if absolute else relativeTo
+        result = [] if absolute else list(relativeTo)
+        for e in s.split("/"):
+            if e == "..":
+                if result:
+                    result.pop()
+            elif e != ".":
+                result.append(stringToPathElement(e))
+        return tuple(result)
+    elif isinstance(s, collections.abc.Sequence):
+        result = tuple(s)
+        for i in result:
+            if type(i) not in (str, int):
+                raise TypeError(
+                    "Path sequence must only contain str and int elements"
+                )
+        return result
+    else:
+        raise TypeError(f"Cannot convert type { type(s).__name__ } to path")
 
 
 _rex_integer_element = re.compile(r"^\[(\d+)\]$")
