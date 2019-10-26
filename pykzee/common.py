@@ -1,5 +1,6 @@
 import asyncio
 import collections.abc
+import enum
 import inspect
 import re
 import typing
@@ -32,6 +33,12 @@ Undefined = _make_atom("Undefined", bool=False)
 
 PathElementType = typing.Union[str, int]
 PathType = typing.Tuple[PathElementType]
+
+
+class StateType(enum.Enum):
+    RAW = 0
+    UNRESOLVED = 1
+    RESOLVED = 2
 
 
 class InvalidPathElement(Exception):
@@ -90,10 +97,10 @@ def getDataForPath(data, path: PathType):
     return data
 
 
-def setDataForPath(data, path: PathType, value):
+def setDataForPath(data, path: PathType, value, *, undefined=ImmutableDict()):
     if not path:
         if value is Undefined:
-            return ImmutableDict()
+            return undefined
         else:
             return sanitize(value)
     p, path = path[0], path[1:]

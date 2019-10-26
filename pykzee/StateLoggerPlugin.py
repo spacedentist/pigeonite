@@ -1,13 +1,24 @@
 import logging
 
 from pyimmutable import ImmutableDict, ImmutableList
+from pykzee.common import makePath
 from pykzee.Plugin import Plugin
 
 
 class StateLoggerPlugin(Plugin):
-    def init(self, path=(), *, pretty=False):
-        self.__pretty = pretty
-        self.unsubscribe = self.subscribe(self.stateUpdate, path)
+    def init(self, config):
+        self.__pretty = bool(config.get("pretty", False))
+        self.unsubscribe = self.subscribe(
+            self.stateUpdate, makePath(config.get("path", ()))
+        )
+
+    def updateConfig(self, new_config):
+        self.unsubscribe()
+        self.__pretty = new_config["pretty"]
+        self.unsubscribe = self.subscribe(
+            self.stateUpdate, new_config.get("path", ())
+        )
+        return True
 
     def stateUpdate(self, state):
         if not self.__pretty:

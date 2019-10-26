@@ -11,7 +11,11 @@ setup(
     author_email="sp@cedenti.st",
     license="MIT",
     packages=["pykzee"],
-    install_requires=["aiofiles", "aionotify", "pyimmutable"],
+    install_requires=[
+        "aiofiles>=0.4.0",
+        "watchdog>=0.9.0",
+        "pyimmutable>=0.1.3",
+    ],
     entry_points={"console_scripts": ["pykzee=pykzee.__main__:main"]},
     test_suite="pykzee.tests",
 )

@@ -1,9 +1,10 @@
 import argparse
 import asyncio
 import logging
+import os
 
-import pykzee.PluginLoaderPlugin
-import pykzee.ConfigPlugin
+
+from pykzee.RawStateLoader import RawStateLoader
 import pykzee.ManagedTree
 
 logging.getLogger().setLevel(logging.DEBUG)
@@ -17,23 +18,21 @@ else:
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--config", help="path to config directory", required=True)
+parser.add_argument(
+    "--config",
+    help="path to config directory (defaults to current working directory)",
+)
 options = parser.parse_args()
 
 
 async def amain():
-    shutdown = asyncio.Event()
-    tree = pykzee.ManagedTree.ManagedTree()
-    tree.addPlugin(
-        pykzee.ConfigPlugin.ConfigPlugin, None, ("config",), options.config
-    )
-    tree.addPlugin(
-        pykzee.PluginLoaderPlugin.PluginLoaderPlugin,
-        None,
-        configPath=("config", "plugins"),
-        mountPath=("pluginloader",),
-    )
-    await shutdown.wait()
+    if options.config:
+        os.chdir(options.config)
+
+    mtree = pykzee.ManagedTree.ManagedTree()
+    raw_state_loader = RawStateLoader(mtree.setRawState)
+    await raw_state_loader.readStateFromDisk()
+    await raw_state_loader.run()
 
 
 def main():

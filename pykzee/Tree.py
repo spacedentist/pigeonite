@@ -26,10 +26,17 @@ class Tree:
         ),
     )
 
-    def __init__(self, parent, path, *, immediate_updates=True):
-        self.__parentSet = parent.set
-        self.__parentRegisterCommand = parent.registerCommand
+    def __init__(
+        self,
+        path,
+        *,
+        parent_set,
+        parent_register_command,
+        immediate_updates=True
+    ):
         self.__path = path
+        self.__parentSet = parent_set
+        self.__parentRegisterCommand = parent_register_command
         self.__state = ImmutableDict()
         self.__reportedState = Undefined
         self.__registeredCommands = {}
@@ -56,7 +63,7 @@ class Tree:
         if self.__immediate_updates:
             self.submitState()
 
-    def registerCommand(self, path, name, function, doc=Undefined):
+    def registerCommand(self, path, name, function, *, doc=Undefined):
         if doc is Undefined:
             doc = function.__doc__
         existing_rc = self.__registeredCommands.get((path, name))
@@ -67,7 +74,7 @@ class Tree:
             unregister = no_op
         else:
             unregister = self.__parentRegisterCommand(
-                self.__path + path, name, function, doc
+                self.__path + path, name, function, doc=doc
             )
         rc = self.RegisteredCommand(function, doc, unregister)
         self.__registeredCommands[path, name] = rc
@@ -81,7 +88,12 @@ class Tree:
         return unregister_command
 
     def createSubtree(self, path, *, immediate_updates=True):
-        return Tree(self, path, immediate_updates=immediate_updates)
+        return Tree(
+            path,
+            parent_set=self.set,
+            parent_register_command=self.registerCommand,
+            immediate_updates=immediate_updates,
+        )
 
     def clear(self):
         for rc in self.__registeredCommands.values():

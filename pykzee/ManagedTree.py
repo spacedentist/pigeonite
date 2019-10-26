@@ -1,372 +1,505 @@
 import asyncio
+import collections
 import functools
+
+import importlib
 import inspect
 import logging
+import sys
+import traceback
 
 from pyimmutable import ImmutableDict, ImmutableList
 
 from pykzee.common import (
-    InvalidPathElement,
-    PathType,
-    Undefined,
     call_soon,
-    pathToString,
-    setDataForPath,
     getDataForPath,
+    makePath,
+    pathToString,
+    PathType,
+    print_exception_task_callback,
+    sanitize,
+    setDataForPath,
+    StateType,
+    Undefined,
 )
-from pykzee.Plugin import Plugin
-from pykzee.Tree import Tree
+from pykzee import AttachedInfo
+
+
+SubscriptionSlot = collections.namedtuple(
+    "SubscriptionSlot", ("path", "directory", "stateType")
+)
 
 
 class Subscription:
     __slots__ = (
         "plugin",
-        "paths",
-        "directories",
+        "slots",
         "callback",
         "__currentState",
         "__reportedState",
         "disabled",
     )
 
-    def __init__(
-        self, plugin, paths, directories, callback, state, initial: bool
-    ):
+    def __init__(self, plugin, slots, callback, state, initial: bool):
         if (
-            type(paths) != tuple
-            or type(directories) != tuple
+            type(slots) != tuple
+            or any(type(slot) is not SubscriptionSlot for slot in slots)
             or type(state) != ImmutableList
-            or not len(paths) == len(directories) == len(state)
+            or not len(slots) == len(state)
         ):
             logging.error(  # FIXME REMOVE
                 "Subscription constructor called with invalid arguments: "
-                f"paths={ paths !r} directories={ directories !r}"
+                f"slots={ slots !r} len(state)={ len(state) }"
             )
             raise Exception(
                 "Subscription constructor called with invalid arguments: "
-                f"paths={ paths !r} directories={ directories !r}"
+                f"slots={ slots !r} len(state)={ len(state) }"
             )
         self.plugin = plugin
-        self.paths = paths
-        self.directories = directories
+        self.slots = slots
         self.callback = callback
         self.__currentState = state
         self.__reportedState = (
-            ImmutableList([Undefined] * len(paths)) if initial else state
+            ImmutableList(Undefined for _ in slots) if initial else state
         )
         self.disabled = False
 
     def setCurrentState(self, idx, state):
+        old_state = self.__currentState
         self.__currentState = self.__currentState.set(idx, state)
-
-    def needsUpdate(self):
-        return self.__reportedState is not self.__currentState
-
-    def updated(self):
-        self.__reportedState = self.__currentState
+        return self.__currentState is not old_state
 
     def getState(self):
         return self.__currentState
 
-
-class Mount:
-    __slots__ = "plugin", "directory", "tree", "disabled"
-
-    def __init__(self, plugin, directory, tree):
-        self.plugin = plugin
-        self.directory = directory
-        self.tree = tree
-        self.disabled = False
+    def update(self):
+        if (
+            not self.disabled
+            and self.__reportedState is not self.__currentState
+        ):
+            self.__reportedState = self.__currentState
+            call_soon(self.callback, *self.__currentState)
 
 
 class Directory:
-    __slots__ = "parent subdirectories mount subscriptions".split()
+    __slots__ = (
+        "parent",
+        "pathElement",
+        "subdirectories",
+        "subscriptions",
+        "state",
+    )
 
-    def __init__(self, parent):
+    def __init__(self, parent, path_element):
         self.parent = parent
+        self.pathElement = path_element
         self.subdirectories = {}
-        self.mount = None
         self.subscriptions = set()  # (sub, idx) tuples
+        self.state = Undefined
+        try:
+            if type(parent.state) in (ImmutableDict, ImmutableList):
+                self.state = parent.state[path_element]
+        except Exception:
+            ...
+
+    def get(self, path: PathType, *, create=True):
+        d = self
+        for p in path:
+            sd = d.subdirectories.get(p)
+            if sd is None:
+                if create:
+                    sd = d.subdirectories[p] = type(self)(d, p)
+                else:
+                    return
+            d = sd
+        return d
+
+    def garbageCollect(self):
+        parent = self.parent
+        if (
+            parent is not None
+            and not self.subdirectories
+            and not self.subscriptions
+        ):
+            del parent.subdirectories[self.pathElement]
+            self.parent = None
+            parent.garbageCollect()
+
+    def update(self, new_state, updated_subscriptions):
+        if new_state is self.state:
+            return
+
+        for sub, idx in self.subscriptions:
+            if sub.setCurrentState(idx, new_state):
+                updated_subscriptions.add(sub)
+
+        for key, subdir in self.subdirectories.items():
+            sdata = Undefined
+            if type(new_state) in (ImmutableDict, ImmutableList):
+                try:
+                    sdata = new_state[key]
+                except Exception:
+                    ...
+
+            subdir.update(sdata, updated_subscriptions)
+
+        self.state = new_state
 
 
 class Command:
-    __slots__ = "path", "name", "function", "doc", "disabled"
+    __slots__ = "path", "name", "function", "doc", "plugin", "disabled"
 
-    def __init__(self, path, name, function, doc):
+    def __init__(self, path, name, function, doc, plugin):
         self.path = path
         self.name = name
         self.function = function
         self.doc = doc
+        self.plugin = plugin
         self.disabled = False
 
 
 class PluginInfo:
-    __slots__ = "subscriptions", "mounts", "plugInsAdded", "disabled", "plugin"
+    __slots__ = (
+        "path",
+        "configuration",
+        "plugin_object",
+        "state",
+        "subscriptions",
+        "registeredCommands",
+        "disabled",
+    )
 
-    def __init__(self):
+    def __init__(self, *, path, configuration):
+        self.path = path
+        self.configuration = configuration
+        self.plugin_object = None
+        self.state = None
         self.subscriptions = set()
-        self.mounts = set()
-        self.plugInsAdded = set()
+        self.registeredCommands = set()
         self.disabled = False
 
 
 class ManagedTree:
     __slots__ = """
-    __state __root __pluginInfos __commands
-    __subscriptionCheckScheduled __subscriptionCheckLock
-    __corePluginInfo __coreMount __coreSet
+    __rawState __unresolvedState __resolvedState __nextState __realpath
+    __rawSubscriptionRoot __unresolvedSubscriptionRoot
+    __resolvedSubscriptionRoot __updatedSubscriptions
+    __pluginInfos __pluginList __coreState __corePluginPaths
+    __commands
+    __stateUpdateEvent __stateUpdateTask
     """.strip().split()
 
     def __init__(self):
-        self.__state = ImmutableDict()
-        self.__root = Directory(None)
-        self.__pluginInfos = set()
+        self.__rawState = self.__unresolvedState = ImmutableDict()
+        self.__resolvedState = self.__nextState = ImmutableDict()
+        self.__realpath = makePath
+        self.__rawSubscriptionRoot = Directory(None, None)
+        self.__unresolvedSubscriptionRoot = Directory(None, None)
+        self.__resolvedSubscriptionRoot = Directory(None, None)
+        self.__updatedSubscriptions = set()
+        self.__pluginInfos = []
+        self.__pluginList = ImmutableList()
+        self.__coreState = ImmutableDict(commands=ImmutableDict())
+        self.__corePluginPaths = []
         self.__commands = {}  # path -> {name: Command}
-        self.__subscriptionCheckScheduled = False
-        self.__subscriptionCheckLock = asyncio.Lock()
+        self.__stateUpdateEvent = asyncio.Event()
+        self.__stateUpdateTask = asyncio.create_task(
+            self.__stateUpdateTaskImpl()
+        )
+        self.__stateUpdateTask.add_done_callback(print_exception_task_callback)
 
-        self.addPlugin(Plugin, None)
-        self.__corePluginInfo, = list(self.__pluginInfos)
-        self.__coreMount = self.__corePluginInfo.plugin.mount(("core",))
-        self.__coreSet = self.__coreMount.set
+    def get(self, path: PathType, *, type: StateType = StateType.RESOLVED):
+        if type == StateType.RAW:
+            state = self.__rawState
+        elif type == StateType.UNRESOLVED:
+            state = self.__unresolvedState
+        else:
+            state = self.__resolvedState
 
-    def get(self, path: PathType):
-        return getDataForPath(self.__state, path)
+        return getDataForPath(state, path)
 
-    def set(self, path: PathType, value):
-        new_state = setDataForPath(self.__state, path, value)
-        if not new_state.isImmutableJson:
-            raise Exception("invalid data")
-        if self.__state is new_state:
+    def setRawState(self, new_state: ImmutableDict):
+        new_state = sanitize(new_state)
+        if self.__rawState is new_state:
             return
-        old_data = self.__state
-        data = self.__state = new_state
-        directory = self.__root
+        if not new_state.isImmutableJson:
+            raise Exception("Invalid state (not immutable json)")
+        self.__rawState = new_state
+        self.__updatePlugins()
 
-        self.__scheduleSubscriptionCheck()
-        self.__setSubscriptionsState(directory, data)
+        for plugin in self.__pluginInfos:
+            new_state = setDataForPath(new_state, plugin.path, plugin.state)
 
-        for p in path:
-            directory = directory.subdirectories.get(p)
-            if directory is None:
-                return
-            if data is not Undefined:
-                try:
-                    data = data[p]
-                except Exception:
-                    data = Undefined
-            if old_data is not Undefined:
-                try:
-                    old_data = old_data[p]
-                except Exception:
-                    old_data = Undefined
-            self.__setSubscriptionsState(directory, data)
-        self.__recurseToUpdateSubscriptionState(directory, data, old_data)
+        self.__nextState = new_state
+        self.__setCore(
+            ("plugins",),
+            {pathToString(path): config for path, config in self.__pluginList},
+            force=True,
+        )
+
+    def __updatePlugins(self):
+        new_plugin_list = AttachedInfo.plugins(self.__rawState)
+        if new_plugin_list is self.__pluginList:
+            return
+
+        old_plugin_infos = self.__pluginInfos
+        new_plugin_infos = []
+        core_plugin_paths = []
+        old_index = new_index = 0
+
+        while True:
+            have_old = old_index < len(old_plugin_infos)
+            have_new = new_index < len(new_plugin_list)
+
+            if not (have_new or have_old):
+                break
+
+            if have_new:
+                npath, nconfig = new_plugin_list[new_index]
+                if nconfig["__plugin__"] == "core-plugin":
+                    core_plugin_paths.append(npath)
+                    new_index += 1
+                    continue
+
+            if have_old:
+                opi = old_plugin_infos[old_index]
+
+            if not have_new or (have_old and opi.path < npath):
+                self.__removePlugin(opi)
+                old_index += 1
+            elif not have_old or (have_new and npath < opi.path):
+                new_plugin_infos.append(self.__newPlugin(npath, nconfig))
+                new_index += 1
+            else:
+                old_index += 1
+                new_index += 1
+                new_plugin_infos.append(self.__updatePlugin(opi, nconfig))
+
+        self.__pluginInfos = new_plugin_infos
+        self.__pluginList = new_plugin_list
+        self.__corePluginPaths = core_plugin_paths
+
+    def __removePlugin(self, plugin_info):
+        plugin_info.disabled = True
+        plugin_object = plugin_info.plugin_object
+        subscriptions = plugin_info.subscriptions
+        registered_commands = plugin_info.registeredCommands
+
+        plugin_info.configuration = None
+        plugin_info.plugin_object = None
+        plugin_info.state = None
+        plugin_info.subscriptions = set()
+        plugin_info.registeredCommands = set()
+
+        for sub in subscriptions:
+            self.unsubscribe(sub)
+
+        for cmd in registered_commands:
+            self.unregisterCommand(cmd)
+
+        try:
+            plugin_object.shutdown()
+        except Exception:
+            ...
+
+    def __newPlugin(self, path, config):
+        plugin_info = PluginInfo(path=path, configuration=config)
+
+        try:
+            plugin_identifier = config["__plugin__"]
+            module, class_ = plugin_identifier.rsplit(".", 1)
+
+            sys.modules.pop(module, None)
+            mod = importlib.import_module(module)
+
+            PluginType = getattr(mod, class_)
+            plugin_info.plugin_object = PluginType(
+                path=path,
+                get=lambda path: self.get(path),
+                subscribe=lambda callback, *paths, initial=True: (
+                    self.subscribe(
+                        plugin_info, paths, callback, initial=initial
+                    )
+                ),
+                command=self.command,
+                set_state=functools.partial(
+                    self.__setPluginState, plugin_info
+                ),
+                register_command=functools.partial(
+                    self.registerCommand, plugin_info
+                ),
+            )
+            plugin_info.plugin_object.init(config)
+        except Exception as ex:
+            traceback.print_exc()
+            plugin_info.state = ImmutableDict(
+                exception=str(ex), traceback=traceback.format_exc()
+            )
+            plugin_info.plugin_object = None
+
+        return plugin_info
+
+    def __updatePlugin(self, plugin_info, new_config):
+        if plugin_info.configuration is new_config:
+            return plugin_info
+
+        try:
+            if plugin_info.configuration["__plugin__"] == new_config[
+                "__plugin__"
+            ] and plugin_info.plugin_object.updateConfig(new_config):
+                plugin_info.configuration = new_config
+                return plugin_info
+        except Exception:
+            traceback.print_exc()
+
+        self.__removePlugin(plugin_info)
+        return self.__newPlugin(plugin_info.path, new_config)
+
+    def __set(self, path: PathType, value):
+        self.__nextState = setDataForPath(self.__nextState, path, value)
+        if self.__nextState is not self.__unresolvedState:
+            self.__stateUpdateEvent.set()
+
+    def __setCore(self, path, value, *, force=True):
+        new_core_state = setDataForPath(self.__coreState, path, value)
+        if self.__coreState is new_core_state and not force:
+            return
+        self.__coreState = new_core_state
+        next_state = self.__nextState
+        for core_plugin_path in self.__corePluginPaths:
+            next_state = setDataForPath(
+                next_state, core_plugin_path, new_core_state
+            )
+        if next_state is not self.__nextState:
+            self.__nextState = next_state
+            self.__stateUpdateEvent.set()
+
+    def __setPluginState(self, plugin_info, path, value):
+        if not plugin_info.disabled:
+            new_state = setDataForPath(
+                plugin_info.state, path, value, undefined=None
+            )
+            if plugin_info.state is not new_state:
+                plugin_info.state = new_state
+                self.__set(plugin_info.path, new_state)
 
     def command(self, path, cmd):
         return self.__commands[path][cmd].function
 
-    def subscribe(self, plugin_info, paths, callback, initial=True):
-        if plugin_info.disabled or plugin_info not in self.__pluginInfos:
-            raise Exception("disabled/unregistered plugin must not subscribe")
-        directories = tuple(self.__getDirectory(path) for path in paths)
-        state = ImmutableList(self.get(path) for path in paths)
-        sub = Subscription(
-            plugin_info, paths, directories, callback, state, initial
+    def subscribe(
+        self,
+        plugin_info,
+        paths,
+        callback,
+        *,
+        initial=True,
+        state_type=StateType.RESOLVED,
+    ):
+        if plugin_info.disabled:
+            raise Exception("disabled plugin must not subscribe")
+        slots = tuple(
+            SubscriptionSlot(
+                path,
+                (
+                    self.__rawSubscriptionRoot
+                    if state_type == StateType.RAW
+                    else self.__unresolvedSubscriptionRoot
+                    if state_type == StateType.UNRESOLVED
+                    else self.__resolvedSubscriptionRoot
+                ).get(path),
+                state_type,
+            )
+            for path in paths
         )
+        state = ImmutableList(slot.directory.state for slot in slots)
+        sub = Subscription(plugin_info, slots, callback, state, initial)
         plugin_info.subscriptions.add(sub)
-        for idx, directory in enumerate(directories):
-            directory.subscriptions.add((sub, idx))
+        for idx, slot in enumerate(slots):
+            slot.directory.subscriptions.add((sub, idx))
         if initial:
-            self.__scheduleSubscriptionCheck()
+            self.__updatedSubscriptions.add(sub)
+            self.__stateUpdateEvent.set()
         return lambda: self.unsubscribe(sub)
 
     def unsubscribe(self, sub):
         sub.disabled = True
-        for idx, directory in enumerate(sub.directories):
-            directory.subscriptions.discard((sub, idx))
+        for idx, slot in enumerate(sub.slots):
+            slot.directory.subscriptions.discard((sub, idx))
+            slot.directory.garbageCollect()
         sub.plugin.subscriptions.discard(sub)
 
-    def mount(self, plugin_info, path):
-        directory = self.__getDirectory(path)
-        if any(d.mount for d in self.__relatedDirectories(directory)):
-            raise Exception("conflicting mount")
-
-        mount = Mount(plugin_info, directory, Tree(self, path))
-        plugin_info.mounts.add(mount)
-        directory.mount = mount
-        return mount.tree.getAccessProxy()._replace(
-            deactivate=functools.partial(self.unmount, mount)
-        )
-
-    def unmount(self, mount):
-        if mount.disabled:
-            return
-        mount.disabled = True
-        mount.directory.mount = None
-        mount.plugin.mounts.discard(mount)
-        mount.tree.deactivate()
-
-    def registerCommand(self, path, name, function, doc=Undefined):
+    def registerCommand(
+        self, plugin_info, path, name, function, *, doc=Undefined
+    ):
+        if plugin_info.disabled:
+            raise Exception("Disabled plugins cannot register commands")
+        path = plugin_info.path + path
         if doc is Undefined:
             doc = function.__doc__
         sig = inspect.signature(function)
-        cmd = Command(path, name, function, doc)
         try:
             path_commands = self.__commands[path]
         except KeyError:
             path_commands = self.__commands[path] = {}
         if name in path_commands:
             raise Exception("Command { path }:{ name } already registered")
+        cmd = Command(path, name, function, doc, plugin_info)
+        plugin_info.registeredCommands.add(cmd)
         path_commands[name] = cmd
 
-        self.__coreSet(
+        self.__setCore(
             ("commands", pathToString(path), name),
             {"doc": doc, "signature": str(sig)},
         )
 
-        def unregisterCommand():
-            if cmd.disabled:
-                return
-            cmd.disabled = True
-            path_commands = self.__commands[cmd.path]
-            path_commands.pop(cmd.name)
-            if not path_commands:
-                del self.__commands[cmd.path]
-                self.__coreSet(("commands", pathToString(cmd.path)), Undefined)
-            else:
-                self.__coreSet(
-                    ("commands", pathToString(cmd.path), cmd.name), Undefined
-                )
+        return lambda: self.__unregisterCommand(cmd)
 
-        return unregisterCommand
-
-    def addPlugin(
-        self, PluginType: type, added_by: PluginInfo, *args, **kwargs
-    ):
-        if added_by is not None:
-            if added_by.disabled:
-                raise Exception("Disabled plugin tried to register a plugin")
-            if added_by not in self.__pluginInfos:
-                raise Exception("Parent plugin not registered with this tree")
-        if not issubclass(PluginType, Plugin):
-            raise TypeError("Plugin type must derive from Plugin class")
-        plugin_info = PluginInfo()
-        plugin_info.plugin = PluginType(
-            get=lambda path: self.get(path),
-            subscribe=lambda callback, *paths, initial=True: self.subscribe(
-                plugin_info, paths, callback, initial
-            ),
-            mount=lambda path: self.mount(plugin_info, path),
-            addPlugin=lambda PluginType, *args, **kwargs: self.addPlugin(
-                PluginType, plugin_info, *args, **kwargs
-            ),
-            removePlugin=lambda: self.__removePlugin(plugin_info),
-            command=lambda path, cmd: self.command(path, cmd),
-        )
-        self.__pluginInfos.add(plugin_info)
-        if added_by is not None:
-            added_by.plugInsAdded.add(plugin_info)
-        init = getattr(plugin_info.plugin, "init", None)
-        if init is not None:
-            call_soon(init, *args, **kwargs)
-        elif args or kwargs:
-            logging.warning("plugin has no init method - ignoring arguments")
-        return lambda: self.__removePlugin(plugin_info)
-
-    def __removePlugin(self, plugin_info):
-        if plugin_info.disabled:
+    def unregisterCommand(self, cmd):
+        if cmd.disabled:
             return
-        self.__pluginInfos.remove(plugin_info)
-        plugin_info.disabled = True
+        cmd.disabled = True
+        path_commands = self.__commands[cmd.path]
+        path_commands.pop(cmd.name)
+        cmd.plugin.registeredCommands.discard(cmd)
+        if not path_commands:
+            del self.__commands[cmd.path]
+            self.__setCore(("commands", pathToString(cmd.path)), Undefined)
+        else:
+            self.__setCore(
+                ("commands", pathToString(cmd.path), cmd.name), Undefined
+            )
 
-        for p in plugin_info.plugInsAdded:
-            self.__removePlugin(p)
+    async def __stateUpdateTaskImpl(self):
+        while True:
+            await self.__stateUpdateEvent.wait()
+            self.__stateUpdateEvent.clear()
 
-        plugin_info.subscriptions = set()
-        for sub in plugin_info.subscriptions:
-            self.unsubscribe(sub)
+            next_state = self.__nextState
+            if self.__unresolvedState is not next_state:
+                for path_prefix in self.__corePluginPaths:
+                    next_state = setDataForPath(
+                        next_state,
+                        path_prefix + ("symlinks",),
+                        AttachedInfo.symlinkInfoDict(next_state),
+                    )
 
-        plugin_info.mounts = set()
-        for mount in plugin_info.mounts:
-            self.unmount(mount)
+                self.__resolvedState = AttachedInfo.resolved(next_state)
+                self.__realpath = (
+                    lambda func: lambda path: func(makePath(path))
+                )(AttachedInfo.realpath(next_state))
+                self.__unresolvedState = self.__nextState = next_state
 
-        shutdown = getattr(plugin_info.plugin, "shutdown", None)
-        if shutdown is not None:
-            call_soon(shutdown)
+            self.__rawSubscriptionRoot.update(
+                self.__rawState, self.__updatedSubscriptions
+            )
+            self.__unresolvedSubscriptionRoot.update(
+                self.__unresolvedState, self.__updatedSubscriptions
+            )
+            self.__resolvedSubscriptionRoot.update(
+                self.__resolvedState, self.__updatedSubscriptions
+            )
 
-    def __scheduleSubscriptionCheck(self):
-        if not self.__subscriptionCheckScheduled:
-            self.__subscriptionCheckScheduled = True
-            call_soon(self.__subscriptionCheck)
-
-    async def __subscriptionCheck(self):
-        async with self.__subscriptionCheckLock:
-            self.__subscriptionCheckScheduled = False
-
-            for sub in list(
-                sub
-                for plugin_info in self.__pluginInfos
-                for sub in plugin_info.subscriptions
-            ):
-                if sub.disabled:
-                    continue
-                if sub.needsUpdate():
-                    call_soon(sub.callback, *sub.getState())
-                    sub.updated()
-
-    def __getDirectory(self, path: PathType, create=True):
-        d = self.__root
-        for p in path:
-            sd = d.subdirectories.get(p)
-            if sd is None:
-                if create:
-                    sd = d.subdirectories[p] = Directory(d)
-                else:
-                    return
-            d = sd
-        return d
-
-    def __relatedDirectories(self, directory):
-        yield directory
-
-        parent = directory.parent
-        while parent is not None:
-            yield parent
-            parent = parent.parent
-
-        subdirs = list(directory.subdirectories.values())
-        while subdirs:
-            sd = subdirs.pop()
-            yield sd
-            subdirs.extend(sd.subdirectories.values())
-
-    @staticmethod
-    def __setSubscriptionsState(directory, state):
-        for sub, idx in directory.subscriptions:
-            sub.setCurrentState(idx, state)
-
-    @classmethod
-    def __recurseToUpdateSubscriptionState(cls, directory, data, old_data):
-        for name, subdir in directory.subdirectories.items():
-            if type(data) in (ImmutableDict, ImmutableList):
-                try:
-                    sdata = data[name]
-                except Exception:
-                    sdata = Undefined
-            else:
-                sdata = Undefined
-
-            if type(old_data) in (ImmutableDict, ImmutableList):
-                try:
-                    old_sdata = old_data[name]
-                except Exception:
-                    old_sdata = Undefined
-            else:
-                old_sdata = Undefined
-
-            if sdata is old_sdata:
-                continue
-
-            cls.__setSubscriptionsState(subdir, sdata)
-            cls.__recurseToUpdateSubscriptionState(subdir, sdata, old_sdata)
+            updated_subscriptions = self.__updatedSubscriptions
+            self.__updatedSubscriptions = set()
+            for sub in updated_subscriptions:
+                sub.update()
