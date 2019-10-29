@@ -13,4 +13,5 @@ setup(
     packages=["pykzee"],
     install_requires=["aiofiles", "aionotify", "pyimmutable"],
     entry_points={"console_scripts": ["pykzee=pykzee.__main__:main"]},
+    test_suite="pykzee.tests",
 )

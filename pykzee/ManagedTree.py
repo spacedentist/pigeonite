@@ -214,7 +214,6 @@ class ManagedTree:
         mount.plugin.mounts.discard(mount)
         mount.tree.deactivate()
 
-    # def registerCommand(self, mount, path, name, function, doc):
     def registerCommand(self, path, name, function, doc=Undefined):
         if doc is Undefined:
             doc = function.__doc__

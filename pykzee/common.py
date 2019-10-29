@@ -42,24 +42,24 @@ class PathElementTypeMismatch(Exception):
 
 def sanitize(data):
     t = type(data)
-    if data in (None, True, False) or t in (str, int, float):
-        return data
     if t in (ImmutableList, ImmutableDict):
         if t.isImmutableJson:
             return data
-    if t in (list, ImmutableList, tuple):
-        data = ImmutableList(sanitize(x) for x in data if x is not Undefined)
-        assert data.isImmutableJson
+    if data in (None, True, False) or t in (str, int, float):
         return data
-    if t in (dict, ImmutableDict):
+    elif t in (list, ImmutableList, tuple):
+        data = ImmutableList(sanitize(x) for x in data if x is not Undefined)
+        if data.isImmutableJson:
+            return data
+    elif t in (dict, ImmutableDict):
         data = ImmutableDict(
             (enforceKeyType(key), sanitize(value))
             for key, value in data.items()
             if value is not Undefined
         )
-        assert data.isImmutableJson
-        return data
-    raise TypeError(f"Type { t !r} not allowed")
+        if data.isImmutableJson:
+            return data
+    raise TypeError("data cannot be sanitized to immutable json")
 
 
 def enforceKeyType(s):

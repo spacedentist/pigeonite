@@ -93,7 +93,7 @@ class Tree:
         self.__parentSet(self.__path, Undefined)
 
     def deactivate(self):
-        if self.__deactivated:
+        if not self.__deactivated:
             self.clear()
             self.__parentSet = self.__parentRegisterCommand = raise_deactivated
             self.__deactivated = True
