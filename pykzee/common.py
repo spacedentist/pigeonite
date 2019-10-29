@@ -15,11 +15,19 @@ __all__ = (
 )
 
 
-Undefined = type(
-    "UndefinedType",
-    (object,),
-    {"__repr__": lambda self: "Undefined", "__bool__": lambda self: False},
-)()
+def _make_atom(name, *, bool=None):
+    typedict = {"__repr__": lambda self: name}
+    if bool is not None:
+        typedict["__bool__"] = (
+            (lambda self: True) if bool else (lambda self: False)
+        )
+    atomtype = type(f"{ name }Type", (object,), typedict)
+    atom = atomtype()
+    atomtype.__new__ = (lambda x: lambda cls: x)(atom)
+    return atom
+
+
+Undefined = _make_atom("Undefined", bool=False)
 
 PathElementType = typing.Union[str, int]
 PathType = typing.Tuple[PathElementType]
