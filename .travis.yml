@@ -1,0 +1,20 @@
+dist: bionic
+
+language: python
+
+matrix:
+  include:
+    - python: 3.7
+      env: TOXENV=flake8
+    - python: 3.7
+      env: TOXENV=py37 CC=g++-8
+      before_install: sudo apt-get -y install g++-8 libssl-dev
+    - python: 3.8
+      env: TOXENV=py38 CC=g++-8
+      before_install: sudo apt-get -y install g++-8 libssl-dev
+
+install:
+  - pip install tox
+
+script:
+  - tox
