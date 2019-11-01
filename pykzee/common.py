@@ -1,5 +1,5 @@
 import asyncio
-import collections.abc
+from collections.abc import Mapping, Sequence
 import enum
 import inspect
 import re
@@ -58,16 +58,15 @@ class PathElementTypeMismatch(Exception):
 
 def sanitize(data):
     t = type(data)
-    if t in (ImmutableList, ImmutableDict):
-        if t.isImmutableJson:
-            return data
-    if data in (None, True, False) or t in (str, int, float):
+    if (t is ImmutableList or t is ImmutableDict) and data.isImmutableJson:
         return data
-    elif t in (list, ImmutableList, tuple):
+    if data is None or t is bool or t is str or t is int or t is float:
+        return data
+    elif isinstance(data, Sequence):
         data = ImmutableList(sanitize(x) for x in data if x is not Undefined)
         if data.isImmutableJson:
             return data
-    elif t in (dict, ImmutableDict):
+    elif isinstance(data, Mapping):
         data = ImmutableDict(
             (enforceKeyType(key), sanitize(value))
             for key, value in data.items()
@@ -148,7 +147,7 @@ def makePath(
             elif e != ".":
                 result.append(stringToPathElement(e))
         return tuple(result)
-    elif isinstance(s, collections.abc.Sequence):
+    elif isinstance(s, Sequence):
         result = tuple(s)
         for i in result:
             if type(i) not in (str, int):
