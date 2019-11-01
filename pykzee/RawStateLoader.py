@@ -1,11 +1,16 @@
 import asyncio
+import json
+import logging
+import os
+import stat
 import traceback
 
+import aiofiles
+from pyimmutable import ImmutableDict
 import watchdog.events
 import watchdog.observers
 
 from pykzee.common import print_exception_task_callback
-from pykzee.JsonFileTree import load_json_tree
 
 
 class RawStateLoader:
@@ -35,7 +40,9 @@ class RawStateLoader:
 
     async def readStateFromDisk(self):
         self.__reread_tree_event.clear()
-        self.__setRawState(await load_json_tree("."))
+        self.__setRawState(
+            ImmutableDict([x async for x in load_state_tree(".")])
+        )
 
     async def run(self):
         return await self.__shutdown
@@ -57,3 +64,31 @@ class WatchdogEventHandler(watchdog.events.FileSystemEventHandler):
 
     def on_any_event(self, event):
         self.__callback()
+
+
+async def load_state_tree(dirpath):
+    for filename in sorted(os.listdir(dirpath)):
+        if filename.startswith(".") or filename.endswith("~"):
+            continue
+
+        key = filename
+        fspath = os.path.join(dirpath, filename)
+        mode = os.stat(fspath).st_mode
+
+        if stat.S_ISDIR(mode):
+            yield key, ImmutableDict(
+                [x async for x in load_state_tree(fspath)]
+            )
+        elif stat.S_ISREG(mode):
+            async with aiofiles.open(fspath) as f:
+                content = await f.read()
+            if key.endswith(".json"):
+                key = key[:-5]
+                content = json.loads(content)
+            elif key.endswith(".txt"):
+                key = key[:-4]
+            yield key, content
+        else:
+            logging.warning(
+                f"ConfigPlugin: ignoring non-regular file f{ fspath }"
+            )
