@@ -344,9 +344,13 @@ class ManagedTree:
             return plugin_info
 
         try:
-            if plugin_info.configuration["__plugin__"] == new_config[
-                "__plugin__"
-            ] and plugin_info.plugin_object.updateConfig(new_config):
+            if (
+                plugin_info.configuration["__plugin__"]
+                == new_config["__plugin__"]
+                and plugin_info.plugin_object
+                and hasattr(plugin_info.plugin_object, "updateConfig")
+                and plugin_info.plugin_object.updateConfig(new_config)
+            ):
                 plugin_info.configuration = new_config
                 return plugin_info
         except Exception:
