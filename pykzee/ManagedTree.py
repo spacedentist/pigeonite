@@ -216,7 +216,7 @@ class ManagedTree:
         else:
             state = self.__resolvedState
 
-        return getDataForPath(state, path)
+        return getDataForPath(state, makePath(path))
 
     def setRawState(self, new_state: ImmutableDict):
         new_state = sanitize(new_state)
@@ -388,7 +388,7 @@ class ManagedTree:
                 self.__set(plugin_info.path, new_state)
 
     def command(self, path, cmd):
-        return self.__commands[path][cmd].function
+        return self.__commands[makePath(path)][cmd].function
 
     def subscribe(
         self,
@@ -413,7 +413,7 @@ class ManagedTree:
                 ).get(path),
                 state_type,
             )
-            for path in paths
+            for path in map(makePath, paths)
         )
         state = ImmutableList(slot.directory.state for slot in slots)
         sub = Subscription(plugin_info, slots, callback, state, initial)
@@ -437,7 +437,7 @@ class ManagedTree:
     ):
         if plugin_info.disabled:
             raise Exception("Disabled plugins cannot register commands")
-        path = plugin_info.path + path
+        path = plugin_info.path + makePath(path)
         if doc is Undefined:
             doc = function.__doc__
         sig = inspect.signature(function)
