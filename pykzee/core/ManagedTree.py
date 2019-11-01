@@ -10,7 +10,7 @@ import traceback
 
 from pyimmutable import ImmutableDict, ImmutableList
 
-from pykzee.common import (
+from pykzee.core.common import (
     call_soon,
     getDataForPath,
     makePath,
@@ -22,7 +22,7 @@ from pykzee.common import (
     StateType,
     Undefined,
 )
-from pykzee import AttachedInfo
+from pykzee.core import AttachedInfo
 
 
 SubscriptionSlot = collections.namedtuple(

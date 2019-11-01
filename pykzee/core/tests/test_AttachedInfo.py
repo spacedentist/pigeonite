@@ -2,8 +2,8 @@ import unittest
 
 from pyimmutable import ImmutableDict, ImmutableList
 
-from pykzee import AttachedInfo
-from pykzee.common import sanitize
+from pykzee.core import AttachedInfo
+from pykzee.core.common import sanitize
 
 
 # class TestGetSubtree(unittest.TestCase):

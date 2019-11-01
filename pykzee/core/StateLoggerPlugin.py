@@ -1,8 +1,8 @@
 import logging
 
 from pyimmutable import ImmutableDict, ImmutableList
-from pykzee.common import makePath
-from pykzee.Plugin import Plugin
+from pykzee.core.common import makePath
+from pykzee.core.Plugin import Plugin
 
 
 class StateLoggerPlugin(Plugin):

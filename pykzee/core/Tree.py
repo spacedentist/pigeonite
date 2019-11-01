@@ -1,7 +1,7 @@
 import collections
 
 from pyimmutable import ImmutableDict
-from pykzee.common import Undefined, setDataForPath
+from pykzee.core.common import Undefined, setDataForPath
 
 
 class Tree:

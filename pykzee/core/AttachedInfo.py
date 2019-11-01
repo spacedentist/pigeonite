@@ -1,7 +1,7 @@
 import functools
 
 from pyimmutable import ImmutableList, ImmutableDict
-from pykzee.common import Undefined, makePath, pathToString
+from pykzee.core.common import Undefined, makePath, pathToString
 
 SameAsData = object()
 

@@ -4,8 +4,8 @@ import logging
 import os
 
 
-from pykzee.RawStateLoader import RawStateLoader
-import pykzee.ManagedTree
+from pykzee.core.RawStateLoader import RawStateLoader
+from pykzee.core.ManagedTree import ManagedTree
 
 logging.getLogger().setLevel(logging.DEBUG)
 
@@ -29,7 +29,7 @@ async def amain():
     if options.config:
         os.chdir(options.config)
 
-    mtree = pykzee.ManagedTree.ManagedTree()
+    mtree = ManagedTree()
     raw_state_loader = RawStateLoader(mtree.setRawState)
     await raw_state_loader.readStateFromDisk()
     await raw_state_loader.run()

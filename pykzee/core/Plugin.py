@@ -1,4 +1,4 @@
-from pykzee.Tree import Tree
+from pykzee.core.Tree import Tree
 
 
 class Plugin:

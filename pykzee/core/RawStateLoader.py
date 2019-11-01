@@ -10,7 +10,7 @@ from pyimmutable import ImmutableDict
 import watchdog.events
 import watchdog.observers
 
-from pykzee.common import print_exception_task_callback
+from pykzee.core.common import print_exception_task_callback
 
 
 class RawStateLoader:

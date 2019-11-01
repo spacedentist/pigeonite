@@ -2,7 +2,7 @@ import unittest
 
 from pyimmutable import ImmutableDict, ImmutableList
 
-from pykzee.common import Undefined, sanitize
+from pykzee.core.common import Undefined, sanitize
 
 
 class TestUndefined(unittest.TestCase):

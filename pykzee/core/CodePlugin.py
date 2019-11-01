@@ -3,8 +3,8 @@ import functools
 import inspect
 import traceback
 
-from pykzee.common import call_soon, Undefined
-from pykzee.Plugin import Plugin
+from pykzee.core.common import call_soon, Undefined
+from pykzee.core.Plugin import Plugin
 
 
 environment = {
