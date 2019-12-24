@@ -5,13 +5,15 @@ from pyimmutable import ImmutableDict, ImmutableList
 from pykzee.core import AttachedInfo
 from pykzee.core.common import sanitize
 
-
-# class TestGetSubtree(unittest.TestCase):
+# Instantiante an empty ImmutableDict, since pykzee modules may or may not do
+# that anyway. This way we know what instance counts to expect in the tests
+# below.
+empty_immutable_dict = ImmutableDict()
 
 
 class TestResolved(unittest.TestCase):
     def test_basic(self):
-        self.assertEqual(immutables_count(), 0)
+        self.assertEqual(immutables_count(), 1)
         data = sanitize(
             {
                 "foo": "bar",
@@ -37,14 +39,14 @@ class TestResolved(unittest.TestCase):
                 "x2": {"y1": 123, "y2": "bar", "y3": 123, "y4": "bar"},
             }
         )
-        self.assertEqual(immutables_count(), 11)
+        self.assertEqual(immutables_count(), 12)
         resolved = AttachedInfo.resolved(data)
         self.assertTrue(resolved is data_resolved)
-        self.assertEqual(immutables_count(), 24)
+        self.assertEqual(immutables_count(), 25)
         data_resolved = resolved = None
-        self.assertEqual(immutables_count(), 24)
+        self.assertEqual(immutables_count(), 25)
         data = None
-        self.assertEqual(immutables_count(), 0)
+        self.assertEqual(immutables_count(), 1)
 
 
 def immutables_count():
