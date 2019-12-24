@@ -3,7 +3,7 @@ import functools
 import inspect
 import traceback
 
-from pykzee.core.common import call_soon, Undefined
+from pykzee.core.common import call_soon, Undefined, pathToString
 from pykzee.core.Plugin import Plugin
 
 
@@ -30,7 +30,11 @@ environment.update(Undefined=Undefined, call_soon=call_soon)
 class CodePlugin(Plugin):
     def init(self, config):
         try:
-            code = compile(config["code.py"], "code.py", "exec")
+            code = compile(
+                config["code.py"],
+                f"<{ pathToString(self.path + ('code.py',)) }>",
+                "exec",
+            )
             globals = {
                 "__builtins__": dict(
                     environment,
