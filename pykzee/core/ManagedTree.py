@@ -1,5 +1,6 @@
 import asyncio
 import collections
+import collections.abc
 import functools
 
 import importlib
@@ -184,7 +185,7 @@ class ManagedTree:
     __rawState __unresolvedState __resolvedState __nextState __realpath
     __rawSubscriptionRoot __unresolvedSubscriptionRoot
     __resolvedSubscriptionRoot __updatedSubscriptions
-    __pluginInfos __pluginList __coreState __corePluginPaths
+    __pluginInfos __pluginList __coreState
     __commands
     __stateUpdateEvent __stateUpdateTask
     """.strip().split()
@@ -200,7 +201,6 @@ class ManagedTree:
         self.__pluginInfos = []
         self.__pluginList = ImmutableList()
         self.__coreState = ImmutableDict(commands=ImmutableDict())
-        self.__corePluginPaths = []
         self.__commands = {}  # path -> {name: Command}
         self.__stateUpdateEvent = asyncio.Event()
         self.__stateUpdateTask = asyncio.create_task(
@@ -218,8 +218,8 @@ class ManagedTree:
 
         return getDataForPath(state, makePath(path))
 
-    def setRawState(self, new_state: ImmutableDict):
-        new_state = sanitize(new_state)
+    def setRawState(self, new_state: collections.abc.Mapping):
+        new_state = sanitize(new_state).discard("sys")
         if self.__rawState is new_state:
             return
         if not new_state.isImmutableJson:
@@ -244,7 +244,6 @@ class ManagedTree:
 
         old_plugin_infos = self.__pluginInfos
         new_plugin_infos = []
-        core_plugin_paths = []
         old_index = new_index = 0
 
         while True:
@@ -256,10 +255,6 @@ class ManagedTree:
 
             if have_new:
                 npath, nconfig = new_plugin_list[new_index]
-                if nconfig["__plugin__"] == "core-plugin":
-                    core_plugin_paths.append(npath)
-                    new_index += 1
-                    continue
 
             if have_old:
                 opi = old_plugin_infos[old_index]
@@ -277,7 +272,6 @@ class ManagedTree:
 
         self.__pluginInfos = new_plugin_infos
         self.__pluginList = new_plugin_list
-        self.__corePluginPaths = core_plugin_paths
 
     def __removePlugin(self, plugin_info):
         plugin_info.disabled = True
@@ -370,10 +364,7 @@ class ManagedTree:
             return
         self.__coreState = new_core_state
         next_state = self.__nextState
-        for core_plugin_path in self.__corePluginPaths:
-            next_state = setDataForPath(
-                next_state, core_plugin_path, new_core_state
-            )
+        next_state = setDataForPath(next_state, ("sys",), new_core_state)
         if next_state is not self.__nextState:
             self.__nextState = next_state
             self.__stateUpdateEvent.set()
@@ -480,12 +471,11 @@ class ManagedTree:
 
             next_state = self.__nextState
             if self.__unresolvedState is not next_state:
-                for path_prefix in self.__corePluginPaths:
-                    next_state = setDataForPath(
-                        next_state,
-                        path_prefix + ("symlinks",),
-                        AttachedInfo.symlinkInfoDict(next_state),
-                    )
+                next_state = setDataForPath(
+                    next_state,
+                    ("sys", "symlinks"),
+                    AttachedInfo.symlinkInfoDict(next_state),
+                )
 
                 self.__resolvedState = AttachedInfo.resolved(next_state)
                 self.__realpath = (
