@@ -446,7 +446,7 @@ class ManagedTree:
         except KeyError:
             path_commands = self.__commands[path] = {}
         if name in path_commands:
-            raise Exception("Command { path }:{ name } already registered")
+            raise Exception(f"Command { path }:{ name } already registered")
         cmd = Command(path, name, function, doc, plugin_info)
         plugin_info.registeredCommands.add(cmd)
         path_commands[name] = cmd
