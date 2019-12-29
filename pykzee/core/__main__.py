@@ -36,6 +36,15 @@ async def amain():
 
 
 def main():
+    try:
+        import uvloop
+    except ImportError:
+        logging.getLogger().info(
+            "For improved performance, please consider installing uvloop: "
+            "`pip install uvloop`"
+        )
+    else:
+        uvloop.install()
     asyncio.run(amain())
 
 
