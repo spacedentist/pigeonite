@@ -1,6 +1,5 @@
 import asyncio
 from collections.abc import Mapping, Sequence
-import enum
 import inspect
 import re
 import typing
@@ -33,12 +32,6 @@ Undefined = _make_atom("Undefined", bool=False)
 
 PathElementType = typing.Union[str, int]
 PathType = typing.Tuple[PathElementType]
-
-
-class StateType(enum.Enum):
-    RAW = 0
-    UNRESOLVED = 1
-    RESOLVED = 2
 
 
 class InvalidPathElement(Exception):

@@ -158,7 +158,8 @@ def _realpaths(data):
 
 
 def realpaths(data):
-    return _realpaths(symlinks(data))
+    # Ignore symlinks in "/sys"!
+    return _realpaths(symlinks(data.discard("sys")))
 
 
 @attribute("_resolveStep")
@@ -218,15 +219,14 @@ def resolved(data, *, max_steps=5, max_backresolve_steps=1):
 def _resolveImpl(resolve_data):
     if len(resolve_data) == 3 and resolve_data[1] == ():
         return resolve_data[2]
+    if len(resolve_data) == 1:
+        return resolve_data[0]
 
     data = resolve_data[0]
     replacements = [
         (resolve_data[i], resolve_data[i + 1])
         for i in range(1, len(resolve_data), 2)
     ]
-
-    if not replacements:
-        return data
 
     try:
         keep_alive = data.meta["_resolveImpl-keep_alive"]

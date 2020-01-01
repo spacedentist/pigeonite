@@ -20,14 +20,13 @@ from pykzee.core.common import (
     print_exception_task_callback,
     sanitize,
     setDataForPath,
-    StateType,
     Undefined,
 )
 from pykzee.core import AttachedInfo
 
 
 SubscriptionSlot = collections.namedtuple(
-    "SubscriptionSlot", ("path", "directory", "stateType")
+    "SubscriptionSlot", ("path", "directory")
 )
 
 
@@ -182,25 +181,22 @@ class PluginInfo:
 
 class ManagedTree:
     __slots__ = """
-    __rawState __unresolvedState __resolvedState __nextState __realpath
-    __rawSubscriptionRoot __unresolvedSubscriptionRoot
-    __resolvedSubscriptionRoot __updatedSubscriptions
+    __rawState __state __unresolvedState __realpath
+    __subscriptionRoot __updatedSubscriptions
     __pluginInfos __pluginList __coreState
     __commands
     __stateUpdateEvent __stateUpdateTask
     """.strip().split()
 
     def __init__(self):
-        self.__rawState = self.__unresolvedState = ImmutableDict()
-        self.__resolvedState = self.__nextState = ImmutableDict()
+        empty_dict = ImmutableDict()
+        self.__rawState = self.__unresolvedState = self.__state = empty_dict
         self.__realpath = makePath
-        self.__rawSubscriptionRoot = Directory(None, None)
-        self.__unresolvedSubscriptionRoot = Directory(None, None)
-        self.__resolvedSubscriptionRoot = Directory(None, None)
+        self.__subscriptionRoot = Directory(None, None)
         self.__updatedSubscriptions = set()
         self.__pluginInfos = []
         self.__pluginList = ImmutableList()
-        self.__coreState = ImmutableDict(commands=ImmutableDict())
+        self.__coreState = ImmutableDict(commands=empty_dict)
         self.__commands = {}  # path -> {name: Command}
         self.__stateUpdateEvent = asyncio.Event()
         self.__stateUpdateTask = asyncio.create_task(
@@ -208,34 +204,37 @@ class ManagedTree:
         )
         self.__stateUpdateTask.add_done_callback(print_exception_task_callback)
 
-    def get(self, path: PathType, *, type: StateType = StateType.RESOLVED):
-        if type == StateType.RAW:
-            state = self.__rawState
-        elif type == StateType.UNRESOLVED:
-            state = self.__unresolvedState
-        else:
-            state = self.__resolvedState
-
-        return getDataForPath(state, makePath(path))
+    def get(self, path: PathType):
+        return getDataForPath(self.__state, makePath(path))
 
     def setRawState(self, new_state: collections.abc.Mapping):
-        new_state = sanitize(new_state).discard("sys")
+        new_state = sanitize(new_state)
+        if (
+            type(new_state) is not ImmutableDict
+            or not new_state.isImmutableJson
+        ):
+            raise Exception("Invalid state (not immutable json dictionary)")
+        new_state = new_state.discard("sys")
         if self.__rawState is new_state:
             return
-        if not new_state.isImmutableJson:
-            raise Exception("Invalid state (not immutable json)")
+
         self.__rawState = new_state
         self.__updatePlugins()
+
+        new_sys = self.__coreState.update(
+            raw=new_state,
+            plugins=ImmutableDict(
+                (pathToString(path), config)
+                for path, config in self.__pluginList
+            ),
+        )
 
         for plugin in self.__pluginInfos:
             new_state = setDataForPath(new_state, plugin.path, plugin.state)
 
-        self.__nextState = new_state
-        self.__setCore(
-            ("plugins",),
-            {pathToString(path): config for path, config in self.__pluginList},
-            force=True,
-        )
+        self.__unresolvedState = new_state
+        self.__coreState = new_sys
+        self.__stateUpdateEvent.set()
 
     def __updatePlugins(self):
         new_plugin_list = AttachedInfo.plugins(self.__rawState)
@@ -354,19 +353,22 @@ class ManagedTree:
         return self.__newPlugin(plugin_info.path, new_config)
 
     def __set(self, path: PathType, value):
-        self.__nextState = setDataForPath(self.__nextState, path, value)
-        if self.__nextState is not self.__unresolvedState:
+        new_state = setDataForPath(self.__unresolvedState, path, value)
+        if self.__unresolvedState is not new_state:
+            self.__unresolvedState = new_state
             self.__stateUpdateEvent.set()
 
-    def __setCore(self, path, value, *, force=True):
+    def __setCore(self, path, value):
         new_core_state = setDataForPath(self.__coreState, path, value)
-        if self.__coreState is new_core_state and not force:
-            return
-        self.__coreState = new_core_state
-        next_state = self.__nextState
-        next_state = setDataForPath(next_state, ("sys",), new_core_state)
-        if next_state is not self.__nextState:
-            self.__nextState = next_state
+        if self.__coreState is not new_core_state:
+            if (
+                type(new_core_state) is not ImmutableDict
+                or not new_core_state.isImmutableJson
+            ):
+                raise Exception(
+                    "Invalid core state (not immutable json dictionary)"
+                )
+            self.__coreState = new_core_state
             self.__stateUpdateEvent.set()
 
     def __setPluginState(self, plugin_info, path, value):
@@ -381,29 +383,11 @@ class ManagedTree:
     def command(self, path, cmd):
         return self.__commands[makePath(path)][cmd].function
 
-    def subscribe(
-        self,
-        plugin_info,
-        paths,
-        callback,
-        *,
-        initial=True,
-        state_type=StateType.RESOLVED,
-    ):
+    def subscribe(self, plugin_info, paths, callback, *, initial=True):
         if plugin_info.disabled:
             raise Exception("disabled plugin must not subscribe")
         slots = tuple(
-            SubscriptionSlot(
-                path,
-                (
-                    self.__rawSubscriptionRoot
-                    if state_type == StateType.RAW
-                    else self.__unresolvedSubscriptionRoot
-                    if state_type == StateType.UNRESOLVED
-                    else self.__resolvedSubscriptionRoot
-                ).get(path),
-                state_type,
-            )
+            SubscriptionSlot(path, self.__subscriptionRoot.get(path))
             for path in map(makePath, paths)
         )
         state = ImmutableList(slot.directory.state for slot in slots)
@@ -465,32 +449,38 @@ class ManagedTree:
             )
 
     async def __stateUpdateTaskImpl(self):
+        previous_state = None
+        previous_sys = None
         while True:
-            await self.__stateUpdateEvent.wait()
-            self.__stateUpdateEvent.clear()
+            state_updated = (
+                self.__unresolvedState is not previous_state
+                or self.__coreState is not previous_sys
+            )
+            if not (state_updated or self.__updatedSubscriptions):
+                self.__stateUpdateEvent.clear()
+                await self.__stateUpdateEvent.wait()
+                continue
 
-            next_state = self.__nextState
-            if self.__unresolvedState is not next_state:
-                next_state = setDataForPath(
-                    next_state,
-                    ("sys", "symlinks"),
-                    AttachedInfo.symlinkInfoDict(next_state),
-                )
-
-                self.__resolvedState = AttachedInfo.resolved(next_state)
+            if state_updated:
+                next_state = self.__unresolvedState.discard("sys")
                 self.__realpath = (
                     lambda func: lambda path: func(makePath(path))
                 )(AttachedInfo.realpath(next_state))
-                self.__unresolvedState = self.__nextState = next_state
 
-            self.__rawSubscriptionRoot.update(
-                self.__rawState, self.__updatedSubscriptions
-            )
-            self.__unresolvedSubscriptionRoot.update(
-                self.__unresolvedState, self.__updatedSubscriptions
-            )
-            self.__resolvedSubscriptionRoot.update(
-                self.__resolvedState, self.__updatedSubscriptions
+                sys = self.__coreState.set(
+                    "symlinks", AttachedInfo.symlinkInfoDict(next_state)
+                )
+                next_state = next_state.set("sys", sys)
+                sys = sys.set("unresolved", next_state)
+                next_state = next_state.set("sys", sys)
+
+                self.__state = AttachedInfo.resolved(next_state)
+                previous_state = self.__unresolvedState
+                previous_sys = self.__coreState
+                self.__unresolvedState = next_state
+
+            self.__subscriptionRoot.update(
+                self.__state, self.__updatedSubscriptions
             )
 
             updated_subscriptions = self.__updatedSubscriptions
