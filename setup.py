@@ -27,7 +27,7 @@ setup(
     install_requires=[
         "aiofiles>=0.4.0",
         "watchdog>=0.9.0",
-        "pyimmutable>=0.2.0",
+        "pyimmutable>=0.2.1",
     ],
     entry_points={"console_scripts": ["pykzee=pykzee.core.__main__:main"]},
     test_suite="pykzee.core.tests",
